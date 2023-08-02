@@ -1305,6 +1305,7 @@ skip:
                     p += sl_header_bytes;
                     buf_size -= sl_header_bytes;
                 }
+
                 if (pes->stream_type == STREAM_TYPE_METADATA &&
                     pes->stream_id == STREAM_ID_METADATA_STREAM &&
                     pes->st->codecpar->codec_id == AV_CODEC_ID_SMPTE_KLV &&
