@@ -615,6 +615,7 @@ library:
 @item raw video                 @tab X @tab X
 @item raw id RoQ                @tab X @tab
 @item raw OBU                   @tab X @tab X
+@item raw OSQ                   @tab   @tab X
 @item raw SBC                   @tab X @tab X
 @item raw Shorten               @tab   @tab X
 @item raw TAK                   @tab   @tab X
@@ -996,6 +997,7 @@ following image formats are supported:
 @item Lagarith               @tab     @tab  X
 @item LCL (LossLess Codec Library) MSZH  @tab     @tab  X
 @item LCL (LossLess Codec Library) ZLIB  @tab  E  @tab  E
+@item LEAD MCMP              @tab     @tab  X
 @item LOCO                   @tab     @tab  X
 @item LucasArts SANM/Smush   @tab     @tab  X
     @tab Used in LucasArts games / SMUSH animations.
@@ -1298,6 +1300,7 @@ following image formats are supported:
 @item On2 AVC (Audio for Video Codec) @tab     @tab  X
 @item Opus                   @tab  E  @tab  X
     @tab encoding supported through external library libopus
+@item OSQ (Original Sound Quality)  @tab     @tab  X
 @item PCM A-law              @tab  X  @tab  X
 @item PCM mu-law             @tab  X  @tab  X
 @item PCM Archimedes VIDC    @tab  X  @tab  X
