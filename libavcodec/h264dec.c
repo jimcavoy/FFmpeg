@@ -492,6 +492,7 @@ static void h264_decode_flush(AVCodecContext *avctx)
     ff_h264_unref_picture(&h->cur_pic);
 
     h->mb_y = 0;
+    h->non_gray = 0;
 
     ff_h264_free_tables(h);
     h->context_initialized = 0;
@@ -938,6 +939,12 @@ static int finalize_frame(H264Context *h, AVFrame *dst, H264Picture *out, int *g
          (h->avctx->flags2 & AV_CODEC_FLAG2_SHOW_ALL) ||
          out->recovered)) {
 
+        if (h->skip_gray > 0 &&
+            h->non_gray && out->gray &&
+            !(h->avctx->flags2 & AV_CODEC_FLAG2_SHOW_ALL)
+        )
+            return 0;
+
         if (!h->avctx->hwaccel &&
             (out->field_poc[0] == INT_MAX ||
              out->field_poc[1] == INT_MAX)
@@ -1090,12 +1097,13 @@ static const AVOption h264_options[] = {
     { "nal_length_size", "nal_length_size", OFFSET(nal_length_size), AV_OPT_TYPE_INT, {.i64 = 0}, 0, 4, VDX },
     { "enable_er", "Enable error resilience on damaged frames (unsafe)", OFFSET(enable_er), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VD },
     { "x264_build", "Assume this x264 version if no x264 version found in any SEI", OFFSET(x264_build), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, VD },
+    { "skip_gray", "Do not return gray gap frames", OFFSET(skip_gray), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, VD },
+    { "noref_gray", "Avoid using gray gap frames as references", OFFSET(noref_gray), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, VD },
     { NULL },
 };
 
 static const AVClass h264_class = {
     .class_name = "H264 Decoder",
-    .item_name  = av_default_item_name,
     .option     = h264_options,
     .version    = LIBAVUTIL_VERSION_INT,
 };
@@ -1121,6 +1129,9 @@ const FFCodec ff_h264_decoder = {
 #endif
 #if CONFIG_H264_D3D11VA2_HWACCEL
                                HWACCEL_D3D11VA2(h264),
+#endif
+#if CONFIG_H264_D3D12VA_HWACCEL
+                               HWACCEL_D3D12VA(h264),
 #endif
 #if CONFIG_H264_NVDEC_HWACCEL
                                HWACCEL_NVDEC(h264),

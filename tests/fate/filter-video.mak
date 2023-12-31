@@ -392,7 +392,7 @@ fate-filter-fps-start-drop: CMD = framecrc -lavfi testsrc2=r=7:d=3.5,fps=3:start
 fate-filter-fps-start-fill: CMD = framecrc -lavfi testsrc2=r=7:d=1.5,setpts=PTS+14,fps=3:start_time=1.5
 
 FATE_FILTER_SAMPLES-$(call FILTERDEMDEC, FPS SCALE, MOV, QTRLE) += fate-filter-fps-cfr fate-filter-fps
-fate-filter-fps-cfr: CMD = framecrc -auto_conversion_filters -i $(TARGET_SAMPLES)/qtrle/apple-animation-variable-fps-bug.mov -r 30 -vsync cfr -pix_fmt yuv420p
+fate-filter-fps-cfr: CMD = framecrc -auto_conversion_filters -i $(TARGET_SAMPLES)/qtrle/apple-animation-variable-fps-bug.mov -r 30 -fps_mode cfr -pix_fmt yuv420p
 fate-filter-fps:     CMD = framecrc -auto_conversion_filters -i $(TARGET_SAMPLES)/qtrle/apple-animation-variable-fps-bug.mov -vf fps=30 -pix_fmt yuv420p
 
 FATE_FILTER_ALPHAEXTRACT_ALPHAMERGE := $(addprefix fate-filter-alphaextract_alphamerge_, rgb yuv)
@@ -455,6 +455,9 @@ fate-filter-vflip_vflip: CMD = video_filter "vflip,vflip"
 FATE_FILTER_VSYNTH_VIDEO_FILTER-$(call ALLYES, SCALE_FILTER FORMAT_FILTER PERMS_FILTER EDGEDETECT_FILTER) += fate-filter-edgedetect fate-filter-edgedetect-colormix
 fate-filter-edgedetect: CMD = video_filter "scale,format=gray,perms=random,edgedetect" -frames:v 20
 fate-filter-edgedetect-colormix: CMD = video_filter "scale,format=gbrp,perms=random,edgedetect=mode=colormix" -frames:v 20
+
+FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_MEDIAN_FILTER) += fate-filter-median
+fate-filter-median: CMD = video_filter "median=radius=5"
 
 FATE_FILTER_VSYNTH_VIDEO_FILTER-$(call ALLYES, PERMS_FILTER HUE_FILTER) += fate-filter-hue1 fate-filter-hue2 fate-filter-hue3
 fate-filter-hue1: CMD = video_filter "perms=random,hue=s=sin(2*PI*t)+1" -frames:v 20
@@ -532,6 +535,17 @@ fate-filter-thumbnail: CMD = video_filter "scale,thumbnail=10"
 FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_TILE_FILTER) += fate-filter-tile
 fate-filter-tile: CMD = video_filter "tile=3x3:nb_frames=5:padding=7:margin=2"
 
+FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_PIXELIZE_FILTER) += fate-filter-pixelize-avg
+fate-filter-pixelize-avg: CMD = video_filter "pixelize=mode=avg"
+
+FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_PIXELIZE_FILTER) += fate-filter-pixelize-min
+fate-filter-pixelize-min: CMD = video_filter "pixelize=mode=min"
+
+FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_PIXELIZE_FILTER) += fate-filter-pixelize-max
+fate-filter-pixelize-max: CMD = video_filter "pixelize=mode=max"
+
+FATE_FILTER_VSYNTH_VIDEO_FILTER-$(CONFIG_TILTANDSHIFT_FILTER) += fate-filter-tiltandshift
+fate-filter-tiltandshift: CMD = framecrc -c:v pgmyuv -i $(SRC) -flags +bitexact -vf tiltandshift
 
 tests/pixfmts.mak: TAG = GEN
 tests/pixfmts.mak: ffmpeg$(PROGSSUF)$(EXESUF) | tests
