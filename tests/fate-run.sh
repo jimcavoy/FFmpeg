@@ -500,7 +500,40 @@ pixfmt_conversion(){
     run_avconv $DEC_OPTS -r 1 -f image2 -c:v pgmyuv -i $raw_src \
                $ENC_OPTS -f rawvideo -t 1 -s 352x288 -pix_fmt $conversion $target_path/$raw_dst || return
     do_avconv $file $DEC_OPTS -f rawvideo -s 352x288 -pix_fmt $conversion -i $target_path/$raw_dst \
-              $ENC_OPTS -f rawvideo -s 352x288 -pix_fmt yuv444p
+              $ENC_OPTS -f rawvideo -s 352x288 -pix_fmt yuv444p -color_range mpeg
+}
+
+pixfmt_conversion_ext(){
+    prefix=$1
+    color_range="${test#pixfmt-}"
+    color_range=${color_range%-*}
+    conversion="${test#pixfmt-$color_range-}"
+    outdir="tests/data/pixfmt"
+    file=${outdir}/${color_range}-${conversion}.yuv
+    cleanfiles="$cleanfiles $file"
+    do_avconv $file $DEC_OPTS -lavfi ${prefix}testsrc=s=352x288,format=${color_range},scale,format=$conversion \
+              $ENC_OPTS -t 1 -f rawvideo -s 352x288 -pix_fmt ${color_range}le -color_range mpeg
+}
+
+pixdesc(){
+    pix_fmt=${test#filter-pixdesc-}
+    label=${test#filter-}
+    raw_src="${target_path}/tests/vsynth1/%02d.pgm"
+
+    md5file1="${outdir}/${test}-1.md5"
+    md5file2="${outdir}/${test}-2.md5"
+    cleanfiles="$cleanfiles $md5file1 $md5file2"
+
+    ffmpeg $DEC_OPTS -f image2 -vcodec pgmyuv -i $raw_src \
+        $FLAGS $ENC_OPTS -vf "scale,format=$pix_fmt" -vcodec rawvideo -frames:v 5 \
+        "-pix_fmt $pix_fmt" -f nut md5:$md5file1
+    ffmpeg $DEC_OPTS -f image2 -vcodec pgmyuv -i $raw_src \
+        $FLAGS $ENC_OPTS -vf "scale,format=$pix_fmt,pixdesctest" -vcodec rawvideo -frames:v 5 \
+        "-pix_fmt $pix_fmt" -f nut md5:$md5file2
+
+    diff -q $md5file1 $md5file2 || return
+    printf '%-20s' $label
+    cat $md5file1
 }
 
 video_filter(){

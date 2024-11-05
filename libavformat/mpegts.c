@@ -34,7 +34,7 @@
 #include "libavcodec/bytestream.h"
 #include "libavcodec/defs.h"
 #include "libavcodec/get_bits.h"
-#include "libavcodec/opus.h"
+#include "libavcodec/opus/opus.h"
 #include "avformat.h"
 #include "mpegts.h"
 #include "internal.h"
@@ -1673,6 +1673,8 @@ static int mp4_read_iods(AVFormatContext *s, const uint8_t *buf, unsigned size,
     MP4DescrParseContext d;
     int ret;
 
+    d.predefined_SLConfigDescriptor_seen = 0;
+
     ret = init_MP4DescrParseContext(&d, s, buf, size, descr, max_descr_count);
     if (ret < 0)
         return ret;
@@ -3114,8 +3116,6 @@ static int mpegts_read_header(AVFormatContext *s)
     int64_t pos, probesize = s->probesize;
     int64_t seekback = FFMAX(s->probesize, (int64_t)ts->resync_size + PROBE_PACKET_MAX_BUF);
 
-    ffformatcontext(s)->prefer_codec_framerate = 1;
-
     if (ffio_ensure_seekback(pb, seekback) < 0)
         av_log(s, AV_LOG_WARNING, "Failed to allocate buffers for seekback\n");
 
@@ -3447,6 +3447,7 @@ const FFInputFormat ff_mpegts_demuxer = {
     .read_packet    = mpegts_read_packet,
     .read_close     = mpegts_read_close,
     .read_timestamp = mpegts_get_dts,
+    .flags_internal  = FF_INFMT_FLAG_PREFER_CODEC_FRAMERATE,
 };
 
 const FFInputFormat ff_mpegtsraw_demuxer = {
@@ -3459,4 +3460,5 @@ const FFInputFormat ff_mpegtsraw_demuxer = {
     .read_packet    = mpegts_raw_read_packet,
     .read_close     = mpegts_read_close,
     .read_timestamp = mpegts_get_dts,
+    .flags_internal  = FF_INFMT_FLAG_PREFER_CODEC_FRAMERATE,
 };

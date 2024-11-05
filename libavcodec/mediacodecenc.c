@@ -134,7 +134,7 @@ static int extract_extradata_support(AVCodecContext *avctx)
 static int mediacodec_init_bsf(AVCodecContext *avctx)
 {
     MediaCodecEncContext *s = avctx->priv_data;
-    char str[128];
+    char str[128] = {0};
     int ret;
     int crop_right = s->width - avctx->width;
     int crop_bottom = s->height - avctx->height;
@@ -429,6 +429,16 @@ static int mediacodec_receive(AVCodecContext *avctx, AVPacket *pkt)
     }
 
     if (out_info.flags & ff_AMediaCodec_getBufferFlagCodecConfig(codec)) {
+        if (avctx->codec_id == AV_CODEC_ID_AV1) {
+            // Skip AV1CodecConfigurationRecord without configOBUs
+            if (out_info.size <= 4) {
+                ff_AMediaCodec_releaseOutputBuffer(codec, index, false);
+                return mediacodec_receive(avctx, pkt);
+            }
+            out_info.size -= 4;
+            out_info.offset += 4;
+        }
+
         ret = av_reallocp(&s->extradata, out_info.size);
         if (ret)
             goto bailout;
@@ -776,6 +786,7 @@ const FFCodec ff_ ## short_name ## _mediacodec_encoder = {              \
                         AV_CODEC_CAP_ENCODER_FLUSH,                     \
     .priv_data_size   = sizeof(MediaCodecEncContext),                   \
     .p.pix_fmts       = avc_pix_fmts,                                   \
+    .color_ranges   = AVCOL_RANGE_MPEG | AVCOL_RANGE_JPEG,              \
     .init             = mediacodec_init,                                \
     FF_CODEC_RECEIVE_PACKET_CB(mediacodec_encode),                      \
     .close            = mediacodec_close,                               \

@@ -32,7 +32,6 @@
 #include "libavutil/file_open.h"
 #include "avfilter.h"
 #include "filters.h"
-#include "internal.h"
 #include "signature.h"
 #include "signature_lookup.c"
 
@@ -387,9 +386,7 @@ static int xml_export(AVFilterContext *ctx, StreamContext *sc, const char* filen
     f = avpriv_fopen_utf8(filename, "w");
     if (!f) {
         int err = AVERROR(EINVAL);
-        char buf[128];
-        av_strerror(err, buf, sizeof(buf));
-        av_log(ctx, AV_LOG_ERROR, "cannot open xml file %s: %s\n", filename, buf);
+        av_log(ctx, AV_LOG_ERROR, "cannot open xml file %s: %s\n", filename, av_err2str(err));
         return err;
     }
 
@@ -501,9 +498,7 @@ static int binary_export(AVFilterContext *ctx, StreamContext *sc, const char* fi
     f = avpriv_fopen_utf8(filename, "wb");
     if (!f) {
         int err = AVERROR(EINVAL);
-        char buf[128];
-        av_strerror(err, buf, sizeof(buf));
-        av_log(ctx, AV_LOG_ERROR, "cannot open file %s: %s\n", filename, buf);
+        av_log(ctx, AV_LOG_ERROR, "cannot open file %s: %s\n", filename, av_err2str(err));
         av_freep(&buffer);
         return err;
     }

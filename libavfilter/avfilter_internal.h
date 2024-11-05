@@ -92,6 +92,37 @@ static inline FilterLinkInternal *ff_link_internal(AVFilterLink *link)
     return (FilterLinkInternal*)link;
 }
 
+typedef struct FFFilterContext {
+    /**
+     * The public AVFilterContext. See avfilter.h for it.
+     */
+    AVFilterContext p;
+
+    avfilter_execute_func *execute;
+
+    // AV_CLASS_STATE_FLAG_*
+    unsigned state_flags;
+
+    /**
+     * Ready status of the filter.
+     * A non-0 value means that the filter needs activating;
+     * a higher value suggests a more urgent activation.
+     */
+    unsigned ready;
+
+    ///< parsed expression
+    struct AVExpr *enable;
+    ///< variable values for the enable expression
+    double *var_values;
+
+    struct AVFilterCommand *command_queue;
+} FFFilterContext;
+
+static inline FFFilterContext *fffilterctx(AVFilterContext *ctx)
+{
+    return (FFFilterContext*)ctx;
+}
+
 typedef struct AVFilterCommand {
     double time;                ///< time expressed in seconds
     char *command;              ///< command
@@ -160,5 +191,35 @@ int ff_filter_opt_parse(void *logctx, const AVClass *priv_class,
 int ff_graph_thread_init(FFFilterGraph *graph);
 
 void ff_graph_thread_free(FFFilterGraph *graph);
+
+/**
+ * Negotiate the media format, dimensions, etc of all inputs to a filter.
+ *
+ * @param filter the filter to negotiate the properties for its inputs
+ * @return       zero on successful negotiation
+ */
+int ff_filter_config_links(AVFilterContext *filter);
+
+/* misc trace functions */
+
+#define FF_TPRINTF_START(ctx, func) ff_tlog(NULL, "%-16s: ", #func)
+
+#ifdef TRACE
+void ff_tlog_link(void *ctx, AVFilterLink *link, int end);
+#else
+#define ff_tlog_link(ctx, link, end) do { } while(0)
+#endif
+
+/**
+ * Run one round of processing on a filter graph.
+ */
+int ff_filter_graph_run_once(AVFilterGraph *graph);
+
+/**
+ * Process the commands queued in the link up to the time of the frame.
+ * Commands will trigger the process_command() callback.
+ * @return  >= 0 or AVERROR code.
+ */
+int ff_inlink_process_commands(AVFilterLink *link, const AVFrame *frame);
 
 #endif /* AVFILTER_AVFILTER_INTERNAL_H */

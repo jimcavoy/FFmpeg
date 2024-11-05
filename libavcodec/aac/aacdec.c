@@ -538,7 +538,9 @@ static av_cold void flush(AVCodecContext *avctx)
         }
     }
 
+#if CONFIG_AAC_DECODER
     ff_aac_usac_reset_state(ac, &ac->oc[1]);
+#endif
 }
 
 /**
@@ -1104,7 +1106,7 @@ static av_cold int decode_close(AVCodecContext *avctx)
         OutputConfiguration *oc = &ac->oc[i];
         AACUSACConfig *usac = &oc->usac;
         for (int j = 0; j < usac->nb_elems; j++) {
-            AACUsacElemConfig *ec = &usac->elems[i];
+            AACUsacElemConfig *ec = &usac->elems[j];
             av_freep(&ec->ext.pl_data);
         }
     }

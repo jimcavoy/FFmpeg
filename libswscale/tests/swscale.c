@@ -117,7 +117,7 @@ static int doTest(const uint8_t * const ref[4], int refStride[4], int w, int h,
     int dstStride[4] = {0};
     int i;
     uint64_t ssdY, ssdU = 0, ssdV = 0, ssdA = 0;
-    struct SwsContext *dstContext = NULL, *outContext = NULL;
+    SwsContext *dstContext = NULL, *outContext = NULL;
     uint32_t crc = 0;
     int res      = 0;
 
@@ -125,7 +125,7 @@ static int doTest(const uint8_t * const ref[4], int refStride[4], int w, int h,
         return 0;
 
     if (cur_srcFormat != srcFormat || cur_srcW != srcW || cur_srcH != srcH) {
-        struct SwsContext *srcContext = NULL;
+        SwsContext *srcContext = NULL;
         int p;
 
         for (p = 0; p < 4; p++)
@@ -427,7 +427,7 @@ int main(int argc, char **argv)
     const uint8_t * const src[4] = { data, data + W * H, data + W * H * 2, data + W * H * 3 };
     int stride[4]       = { W, W, W, W };
     int x, y;
-    struct SwsContext *sws;
+    SwsContext *sws;
     AVLFG rand;
     int res = -1;
     int i;
@@ -445,14 +445,14 @@ int main(int argc, char **argv)
                     "   -ref <file>\n"
                     "       Uses file as reference to compae tests againsts. Tests that have become worse will contain the string worse or WORSE\n"
                     "   -p <number between 0.0 and 1.0>\n"
-                    "       The percentage of tests or comparissions to perform. Doing all tests will take long and generate over a hundread MB text output\n"
+                    "       The percentage of tests or comparisons to perform. Doing all tests will take long and generate over a hundred MB text output\n"
                     "       It is often convenient to perform a random subset\n"
                     "   -dst <pixfmt>\n"
                     "       Only test the specified destination pixel format\n"
                     "   -src <pixfmt>\n"
                     "       Only test the specified source pixel format\n"
                     "   -cpuflags <cpuflags>\n"
-                    "       Uses the specified cpuflags in teh tests\n"
+                    "       Uses the specified cpuflags in the tests\n"
             );
             goto error;
         }

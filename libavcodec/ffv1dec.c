@@ -187,10 +187,10 @@ static int decode_slice_header(const FFV1Context *f,
     if (sx > f->num_h_slices - sw || sy > f->num_v_slices - sh)
         return AVERROR_INVALIDDATA;
 
-    sc->slice_x      =  sx       * (int64_t)f->width  / f->num_h_slices;
-    sc->slice_y      =  sy       * (int64_t)f->height / f->num_v_slices;
-    sc->slice_width  = (sx + sw) * (int64_t)f->width  / f->num_h_slices - sc->slice_x;
-    sc->slice_height = (sy + sh) * (int64_t)f->height / f->num_v_slices - sc->slice_y;
+    sc->slice_x      =  ff_slice_coord(f, f->width , sx     , f->num_h_slices, f->chroma_h_shift);
+    sc->slice_y      =  ff_slice_coord(f, f->height, sy     , f->num_v_slices, f->chroma_v_shift);
+    sc->slice_width  =  ff_slice_coord(f, f->width , sx + sw, f->num_h_slices, f->chroma_h_shift) - sc->slice_x;
+    sc->slice_height =  ff_slice_coord(f, f->height, sy + sh, f->num_v_slices, f->chroma_v_shift) - sc->slice_y;
 
     av_assert0((unsigned)sc->slice_width  <= f->width &&
                 (unsigned)sc->slice_height <= f->height);
@@ -241,7 +241,7 @@ static int decode_slice_header(const FFV1Context *f,
     if (f->version > 3) {
         sc->slice_reset_contexts = get_rac(c, state);
         sc->slice_coding_mode = get_symbol(c, state, 0);
-        if (sc->slice_coding_mode != 1) {
+        if (sc->slice_coding_mode != 1 && f->colorspace == 1) {
             sc->slice_rct_by_coef = get_symbol(c, state, 0);
             sc->slice_rct_ry_coef = get_symbol(c, state, 0);
             if ((uint64_t)sc->slice_rct_by_coef + (uint64_t)sc->slice_rct_ry_coef > 4) {
@@ -347,12 +347,15 @@ static int decode_slice(AVCodecContext *c, void *arg)
     if (f->ac != AC_GOLOMB_RICE && f->version > 2) {
         int v;
         get_rac(&sc->c, (uint8_t[]) { 129 });
-        v = sc->c.bytestream_end - sc->c.bytestream - 2 - 5*f->ec;
+        v = sc->c.bytestream_end - sc->c.bytestream - 2 - 5*!!f->ec;
         if (v) {
             av_log(f->avctx, AV_LOG_ERROR, "bytestream end mismatching by %d\n", v);
             slice_set_damaged(f, sc);
         }
     }
+
+    if (sc->slice_damaged && (f->avctx->err_recognition & AV_EF_EXPLODE))
+        return AVERROR_INVALIDDATA;
 
     if ((c->active_thread_type & FF_THREAD_FRAME) && !f->frame_damaged)
         ff_progress_frame_report(&f->picture, si);
@@ -499,15 +502,17 @@ static int read_extra_header(FFV1Context *f)
 
     if (f->version > 2) {
         f->ec = get_symbol(&c, state, 0);
+        if (f->ec >= 2)
+            f->crcref = 0x7a8c4079;
         if (f->micro_version > 2)
             f->intra = get_symbol(&c, state, 0);
     }
 
     if (f->version > 2) {
         unsigned v;
-        v = av_crc(av_crc_get_table(AV_CRC_32_IEEE), 0,
+        v = av_crc(av_crc_get_table(AV_CRC_32_IEEE), f->crcref,
                    f->avctx->extradata, f->avctx->extradata_size);
-        if (v || f->avctx->extradata_size < 4) {
+        if (v != f->crcref || f->avctx->extradata_size < 4) {
             av_log(f->avctx, AV_LOG_ERROR, "CRC mismatch %X!\n", v);
             return AVERROR_INVALIDDATA;
         }
@@ -945,8 +950,8 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *rframe,
         buf_p -= v;
 
         if (f->ec) {
-            unsigned crc = av_crc(av_crc_get_table(AV_CRC_32_IEEE), 0, buf_p, v);
-            if (crc) {
+            unsigned crc = av_crc(av_crc_get_table(AV_CRC_32_IEEE), f->crcref, buf_p, v);
+            if (crc != f->crcref) {
                 int64_t ts = avpkt->pts != AV_NOPTS_VALUE ? avpkt->pts : avpkt->dts;
                 av_log(f->avctx, AV_LOG_ERROR, "slice CRC mismatch %X!", crc);
                 if (ts != AV_NOPTS_VALUE && avctx->pkt_timebase.num) {

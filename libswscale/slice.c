@@ -145,7 +145,8 @@ int ff_rotate_slice(SwsSlice *s, int lum, int chr)
     return 0;
 }
 
-int ff_init_slice_from_src(SwsSlice * s, uint8_t *src[4], int stride[4], int srcW, int lumY, int lumH, int chrY, int chrH, int relative)
+int ff_init_slice_from_src(SwsSlice * s, uint8_t *const src[4], const int stride[4],
+                           int srcW, int lumY, int lumH, int chrY, int chrH, int relative)
 {
     int i = 0;
 
@@ -217,7 +218,7 @@ static void fill_ones(SwsSlice *s, int n, int bpc)
  The n lines are needed only when there is not enough src lines to output a single
  dst line, then we should buffer these lines to process them on the next call to scale.
 */
-static void get_min_buffer_size(SwsContext *c, int *out_lum_size, int *out_chr_size)
+static void get_min_buffer_size(SwsInternal *c, int *out_lum_size, int *out_chr_size)
 {
     int lumY;
     int dstH = c->dstH;
@@ -246,7 +247,7 @@ static void get_min_buffer_size(SwsContext *c, int *out_lum_size, int *out_chr_s
 
 
 
-int ff_init_filters(SwsContext * c)
+int ff_init_filters(SwsInternal * c)
 {
     int i;
     int index;
@@ -386,7 +387,7 @@ cleanup:
     return res;
 }
 
-int ff_free_filters(SwsContext *c)
+int ff_free_filters(SwsInternal *c)
 {
     int i;
     if (c->desc) {

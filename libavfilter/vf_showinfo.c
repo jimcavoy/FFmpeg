@@ -48,7 +48,6 @@
 
 #include "avfilter.h"
 #include "filters.h"
-#include "internal.h"
 #include "video.h"
 
 typedef struct ShowInfoContext {
@@ -857,6 +856,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
             break;
         case AV_FRAME_DATA_AMBIENT_VIEWING_ENVIRONMENT:
             dump_ambient_viewing_environment(ctx, sd);
+            break;
+        case AV_FRAME_DATA_VIEW_ID:
+            av_log(ctx, AV_LOG_INFO, "view id: %d\n", *(int*)sd->data);
             break;
         default:
             if (name)

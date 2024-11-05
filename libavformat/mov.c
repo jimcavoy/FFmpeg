@@ -40,6 +40,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/dict.h"
+#include "libavutil/display.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/aes.h"
@@ -188,26 +189,42 @@ static int mov_read_mac_string(MOVContext *c, AVIOContext *pb, int len,
     return p - dst;
 }
 
+/**
+ * Get the current item in the parsing process.
+ */
+static HEIFItem *heif_cur_item(MOVContext *c)
+{
+    HEIFItem *item = NULL;
+
+    for (int i = 0; i < c->nb_heif_item; i++) {
+        if (c->heif_item[i].item_id != c->cur_item_id)
+            continue;
+
+        item = &c->heif_item[i];
+        break;
+    }
+
+    return item;
+}
+
+/**
+ * Get the current stream in the parsing process. This can either be the
+ * latest stream added to the context, or the stream referenced by an item.
+ */
 static AVStream *get_curr_st(MOVContext *c)
 {
     AVStream *st = NULL;
+    HEIFItem *item;
 
     if (c->fc->nb_streams < 1)
         return NULL;
 
-    for (int i = 0; i < c->nb_heif_item; i++) {
-        HEIFItem *item = &c->heif_item[i];
+    if (c->cur_item_id == -1)
+        return c->fc->streams[c->fc->nb_streams-1];
 
-        if (!item->st)
-            continue;
-        if (item->st->id != c->cur_item_id)
-            continue;
-
+    item = heif_cur_item(c);
+    if (item)
         st = item->st;
-        break;
-    }
-    if (!st)
-        st = c->fc->streams[c->fc->nb_streams-1];
 
     return st;
 }
@@ -1217,14 +1234,28 @@ static int mov_read_wfex(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 static int mov_read_clap(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
     AVStream *st;
+    HEIFItem *item;
     AVPacketSideData *sd;
+    int width, height, err = 0;
     AVRational aperture_width, aperture_height, horiz_off, vert_off;
     AVRational pc_x, pc_y;
     uint64_t top, bottom, left, right;
 
-    if (c->fc->nb_streams < 1)
+    item = heif_cur_item(c);
+    st = get_curr_st(c);
+    if (!st)
         return 0;
-    st = c->fc->streams[c->fc->nb_streams-1];
+
+    width  = st->codecpar->width;
+    height = st->codecpar->height;
+    if ((!width || !height) && item) {
+        width  = item->width;
+        height = item->height;
+    }
+    if (!width || !height) {
+        err = AVERROR_INVALIDDATA;
+        goto fail;
+    }
 
     aperture_width.num  = avio_rb32(pb);
     aperture_width.den  = avio_rb32(pb);
@@ -1238,17 +1269,18 @@ static int mov_read_clap(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
     if (aperture_width.num  < 0 || aperture_width.den  < 0 ||
         aperture_height.num < 0 || aperture_height.den < 0 ||
-        horiz_off.den       < 0 || vert_off.den        < 0)
-        return AVERROR_INVALIDDATA;
-
+        horiz_off.den       < 0 || vert_off.den        < 0) {
+        err = AVERROR_INVALIDDATA;
+        goto fail;
+    }
     av_log(c->fc, AV_LOG_TRACE, "clap: apertureWidth %d/%d, apertureHeight %d/%d "
                                 "horizOff %d/%d vertOff %d/%d\n",
            aperture_width.num, aperture_width.den, aperture_height.num, aperture_height.den,
            horiz_off.num, horiz_off.den, vert_off.num, vert_off.den);
 
-    pc_x   = av_mul_q((AVRational) { st->codecpar->width  - 1, 1 }, (AVRational) { 1, 2 });
+    pc_x   = av_mul_q((AVRational) { width  - 1, 1 }, (AVRational) { 1, 2 });
     pc_x   = av_add_q(pc_x, horiz_off);
-    pc_y   = av_mul_q((AVRational) { st->codecpar->height - 1, 1 }, (AVRational) { 1, 2 });
+    pc_y   = av_mul_q((AVRational) { height - 1, 1 }, (AVRational) { 1, 2 });
     pc_y   = av_add_q(pc_y, vert_off);
 
     aperture_width  = av_sub_q(aperture_width,  (AVRational) { 1, 1 });
@@ -1261,19 +1293,23 @@ static int mov_read_clap(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     top    = av_q2d(av_sub_q(pc_y, aperture_height));
     bottom = av_q2d(av_add_q(pc_y, aperture_height));
 
-    if (bottom > (st->codecpar->height - 1) ||
-        right  > (st->codecpar->width  - 1))
-        return AVERROR_INVALIDDATA;
+    if (bottom > (height - 1) ||
+        right  > (width  - 1)) {
+        err = AVERROR_INVALIDDATA;
+        goto fail;
+    }
 
-    bottom = st->codecpar->height - 1 - bottom;
-    right  = st->codecpar->width  - 1 - right;
+    bottom = height - 1 - bottom;
+    right  = width  - 1 - right;
 
     if (!(left | right | top | bottom))
         return 0;
 
-    if ((left + right) >= st->codecpar->width ||
-        (top + bottom) >= st->codecpar->height)
-        return AVERROR_INVALIDDATA;
+    if ((left + right) >= width ||
+        (top + bottom) >= height) {
+        err = AVERROR_INVALIDDATA;
+        goto fail;
+    }
 
     sd = av_packet_side_data_new(&st->codecpar->coded_side_data,
                                  &st->codecpar->nb_coded_side_data,
@@ -1287,7 +1323,15 @@ static int mov_read_clap(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     AV_WL32A(sd->data + 8,  left);
     AV_WL32A(sd->data + 12, right);
 
-    return 0;
+fail:
+    if (err < 0) {
+        int explode = !!(c->fc->error_recognition & AV_EF_EXPLODE);
+        av_log(c->fc, explode ? AV_LOG_ERROR : AV_LOG_WARNING, "Invalid clap box\n");
+        if (!explode)
+            err = 0;
+    }
+
+    return err;
 }
 
 /* This atom overrides any previously set aspect ratio */
@@ -2014,13 +2058,17 @@ static int mov_read_pcmc(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 static int mov_read_colr(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
     AVStream *st;
+    HEIFItem *item = NULL;
     char color_parameter_type[5] = { 0 };
     uint16_t color_primaries, color_trc, color_matrix;
     int ret;
 
     st = get_curr_st(c);
-    if (!st)
-        return 0;
+    if (!st) {
+        item = heif_cur_item(c);
+        if (!item)
+            return 0;
+    }
 
     ret = ffio_read_size(pb, color_parameter_type, 4);
     if (ret < 0)
@@ -2034,16 +2082,29 @@ static int mov_read_colr(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     }
 
     if (!strncmp(color_parameter_type, "prof", 4)) {
-        AVPacketSideData *sd = av_packet_side_data_new(&st->codecpar->coded_side_data,
-                                                       &st->codecpar->nb_coded_side_data,
-                                                       AV_PKT_DATA_ICC_PROFILE,
-                                                       atom.size - 4, 0);
-        if (!sd)
-            return AVERROR(ENOMEM);
-        ret = ffio_read_size(pb, sd->data, atom.size - 4);
+        AVPacketSideData *sd;
+        uint8_t *icc_profile;
+        if (st) {
+            sd = av_packet_side_data_new(&st->codecpar->coded_side_data,
+                                         &st->codecpar->nb_coded_side_data,
+                                         AV_PKT_DATA_ICC_PROFILE,
+                                         atom.size - 4, 0);
+            if (!sd)
+                return AVERROR(ENOMEM);
+            icc_profile = sd->data;
+        } else {
+            av_freep(&item->icc_profile);
+            icc_profile = item->icc_profile = av_malloc(atom.size - 4);
+            if (!icc_profile) {
+                item->icc_profile_size = 0;
+                return AVERROR(ENOMEM);
+            }
+            item->icc_profile_size = atom.size - 4;
+        }
+        ret = ffio_read_size(pb, icc_profile, atom.size - 4);
         if (ret < 0)
             return ret;
-    } else {
+    } else if (st) {
         color_primaries = avio_rb16(pb);
         color_trc = avio_rb16(pb);
         color_matrix = avio_rb16(pb);
@@ -2430,6 +2491,30 @@ static int mov_read_dvc1(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     ret = ff_get_extradata(c->fc, st->codecpar, pb, atom.size - 7);
     if (ret < 0)
         return ret;
+
+    return 0;
+}
+
+static int mov_read_sbas(MOVContext* c, AVIOContext* pb, MOVAtom atom)
+{
+    AVStream* st;
+    MOVStreamContext* sc;
+
+    if (c->fc->nb_streams < 1)
+        return 0;
+
+    /* For SBAS this should be fine - though beware if someone implements a
+     * tref atom processor that doesn't drop down to default then this may
+     * be lost. */
+    if (atom.size > 4) {
+        av_log(c->fc, AV_LOG_ERROR, "Only a single tref of type sbas is supported\n");
+        return AVERROR_PATCHWELCOME;
+    }
+
+    st = c->fc->streams[c->fc->nb_streams - 1];
+    sc = st->priv_data;
+    sc->tref_id = avio_rb32(pb);
+    sc->tref_flags |= MOV_TREF_FLAG_ENHANCEMENT;
 
     return 0;
 }
@@ -3497,10 +3582,10 @@ static int mov_read_stts(MOVContext *c, AVIOContext *pb, MOVAtom atom)
             sc->stts_data[i].duration = 1;
             corrected_dts += (delta_magnitude < 0 ? (int64_t)delta_magnitude : 1) * sample_count;
         } else {
-            corrected_dts += sample_duration * (int64_t)sample_count;
+            corrected_dts += sample_duration * (uint64_t)sample_count;
         }
 
-        current_dts += sc->stts_data[i].duration * (int64_t)sample_count;
+        current_dts += sc->stts_data[i].duration * (uint64_t)sample_count;
 
         if (current_dts > corrected_dts) {
             int64_t drift = (current_dts - corrected_dts)/FFMAX(sample_count, 1);
@@ -4995,6 +5080,8 @@ static int mov_read_trak(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     st->codecpar->codec_type = AVMEDIA_TYPE_DATA;
     sc->ffindex = st->index;
     c->trak_index = st->index;
+    sc->tref_flags = 0;
+    sc->tref_id = -1;
     sc->refcount = 1;
 
     if ((ret = mov_read_default(c, pb, atom)) < 0)
@@ -8143,15 +8230,19 @@ static int cenc_filter(MOVContext *mov, AVStream* st, MOVStreamContext *sc, AVPa
             return AVERROR_INVALIDDATA;
         }
 
+        encrypted_sample = NULL;
         if (!encryption_index->nb_encrypted_samples) {
             // Full-sample encryption with default settings.
             encrypted_sample = sc->cenc.default_encrypted_sample;
         } else if (encrypted_index >= 0 && encrypted_index < encryption_index->nb_encrypted_samples) {
             // Per-sample setting override.
             encrypted_sample = encryption_index->encrypted_samples[encrypted_index];
-            if (!encrypted_sample)
+            if (!encrypted_sample) {
                 encrypted_sample = sc->cenc.default_encrypted_sample;
-        } else {
+            }
+        }
+
+        if (!encrypted_sample) {
             av_log(mov->fc, AV_LOG_ERROR, "Incorrect number of samples in encryption info\n");
             return AVERROR_INVALIDDATA;
         }
@@ -8878,6 +8969,7 @@ static int mov_read_iref(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
 static int mov_read_ispe(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
+    HEIFItem *item;
     uint32_t width, height;
 
     avio_r8(pb);  /* version */
@@ -8888,12 +8980,49 @@ static int mov_read_ispe(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     av_log(c->fc, AV_LOG_TRACE, "ispe: item_id %d, width %u, height %u\n",
            c->cur_item_id, width, height);
 
-    for (int i = 0; i < c->nb_heif_item; i++) {
-        if (c->heif_item[i].item_id == c->cur_item_id) {
-            c->heif_item[i].width  = width;
-            c->heif_item[i].height = height;
-            break;
-        }
+    item = heif_cur_item(c);
+    if (item) {
+        item->width  = width;
+        item->height = height;
+    }
+
+    return 0;
+}
+
+static int mov_read_irot(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    HEIFItem *item;
+    int angle;
+
+    angle = avio_r8(pb) & 0x3;
+
+    av_log(c->fc, AV_LOG_TRACE, "irot: item_id %d, angle %u\n",
+           c->cur_item_id, angle);
+
+    item = heif_cur_item(c);
+    if (item) {
+        // angle * 90 specifies the angle (in anti-clockwise direction)
+        // in units of degrees.
+        item->rotation = angle * 90;
+    }
+
+    return 0;
+}
+
+static int mov_read_imir(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    HEIFItem *item;
+    int axis;
+
+    axis = avio_r8(pb) & 0x1;
+
+    av_log(c->fc, AV_LOG_TRACE, "imir: item_id %d, axis %u\n",
+           c->cur_item_id, axis);
+
+    item = heif_cur_item(c);
+    if (item) {
+        item->hflip =  axis;
+        item->vflip = !axis;
     }
 
     return 0;
@@ -9048,6 +9177,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('a','v','c','C'), mov_read_glbl },
 { MKTAG('p','a','s','p'), mov_read_pasp },
 { MKTAG('c','l','a','p'), mov_read_clap },
+{ MKTAG('s','b','a','s'), mov_read_sbas },
 { MKTAG('s','i','d','x'), mov_read_sidx },
 { MKTAG('s','t','b','l'), mov_read_default },
 { MKTAG('s','t','c','o'), mov_read_stco },
@@ -9122,12 +9252,15 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('p','i','t','m'), mov_read_pitm },
 { MKTAG('e','v','c','C'), mov_read_glbl },
 { MKTAG('i','d','a','t'), mov_read_idat },
+{ MKTAG('i','m','i','r'), mov_read_imir },
 { MKTAG('i','r','e','f'), mov_read_iref },
 { MKTAG('i','s','p','e'), mov_read_ispe },
+{ MKTAG('i','r','o','t'), mov_read_irot },
 { MKTAG('i','p','r','p'), mov_read_iprp },
 { MKTAG('i','i','n','f'), mov_read_iinf },
 { MKTAG('a','m','v','e'), mov_read_amve }, /* ambient viewing environment box */
 { MKTAG('l','h','v','C'), mov_read_lhvc },
+{ MKTAG('l','v','c','C'), mov_read_glbl },
 #if CONFIG_IAMFDEC
 { MKTAG('i','a','c','b'), mov_read_iacb },
 #endif
@@ -9645,8 +9778,10 @@ static int mov_read_close(AVFormatContext *s)
 
     av_freep(&mov->aes_decrypt);
     av_freep(&mov->chapter_tracks);
-    for (i = 0; i < mov->nb_heif_item; i++)
+    for (i = 0; i < mov->nb_heif_item; i++) {
         av_freep(&mov->heif_item[i].name);
+        av_freep(&mov->heif_item[i].icc_profile);
+    }
     av_freep(&mov->heif_item);
     for (i = 0; i < mov->nb_heif_grid; i++) {
         av_freep(&mov->heif_grid[i].tile_id_list);
@@ -9792,6 +9927,41 @@ fail:
     return ret;
 }
 
+static int set_icc_profile_from_item(AVPacketSideData **coded_side_data, int *nb_coded_side_data,
+                                     const HEIFItem *item)
+{
+    AVPacketSideData *sd = av_packet_side_data_new(coded_side_data, nb_coded_side_data,
+                                                   AV_PKT_DATA_ICC_PROFILE,
+                                                   item->icc_profile_size, 0);
+    if (!sd)
+        return AVERROR(ENOMEM);
+
+    memcpy(sd->data, item->icc_profile, item->icc_profile_size);
+
+    return 0;
+}
+
+static int set_display_matrix_from_item(AVPacketSideData **coded_side_data, int *nb_coded_side_data,
+                                        const HEIFItem *item)
+{
+    int32_t *matrix;
+    AVPacketSideData *sd = av_packet_side_data_new(coded_side_data,
+                                                   nb_coded_side_data,
+                                                   AV_PKT_DATA_DISPLAYMATRIX,
+                                                   9 * sizeof(*matrix), 0);
+    if (!sd)
+        return AVERROR(ENOMEM);
+
+    matrix = (int32_t*)sd->data;
+    /* rotation is in the counter-clockwise direction whereas
+     * av_display_rotation_set() expects its argument to be
+     * oriented clockwise, so we need to negate it. */
+    av_display_rotation_set(matrix, -item->rotation);
+    av_display_matrix_flip(matrix, item->hflip, item->vflip);
+
+    return 0;
+}
+
 static int read_image_grid(AVFormatContext *s, const HEIFGrid *grid,
                            AVStreamGroupTileGrid *tile_grid)
 {
@@ -9824,6 +9994,21 @@ static int read_image_grid(AVFormatContext *s, const HEIFGrid *grid,
     /* actual width and height of output image */
     tile_grid->width  = (flags & 1) ? avio_rb32(s->pb) : avio_rb16(s->pb);
     tile_grid->height = (flags & 1) ? avio_rb32(s->pb) : avio_rb16(s->pb);
+
+    /* ICC profile */
+    if (item->icc_profile_size) {
+        int ret = set_icc_profile_from_item(&tile_grid->coded_side_data,
+                                            &tile_grid->nb_coded_side_data, item);
+        if (ret < 0)
+            return ret;
+    }
+    /* rotation */
+    if (item->rotation || item->hflip || item->vflip) {
+        int ret = set_display_matrix_from_item(&tile_grid->coded_side_data,
+                                               &tile_grid->nb_coded_side_data, item);
+        if (ret < 0)
+            return ret;
+    }
 
     av_log(c->fc, AV_LOG_TRACE, "grid: grid_rows %d grid_cols %d output_width %d output_height %d\n",
            tile_rows, tile_cols, tile_grid->width, tile_grid->height);
@@ -9915,6 +10100,23 @@ static int read_image_iovl(AVFormatContext *s, const HEIFGrid *grid,
     tile_grid->coded_width  = (flags & 1) ? avio_rb32(s->pb) : avio_rb16(s->pb);
     tile_grid->height       =
     tile_grid->coded_height = (flags & 1) ? avio_rb32(s->pb) : avio_rb16(s->pb);
+
+    /* rotation */
+    if (item->rotation || item->hflip || item->vflip) {
+        int ret = set_display_matrix_from_item(&tile_grid->coded_side_data,
+                                               &tile_grid->nb_coded_side_data, item);
+        if (ret < 0)
+            return ret;
+    }
+
+    /* ICC profile */
+    if (item->icc_profile_size) {
+        int ret = set_icc_profile_from_item(&tile_grid->coded_side_data,
+                                            &tile_grid->nb_coded_side_data, item);
+        if (ret < 0)
+            return ret;
+    }
+
     av_log(c->fc, AV_LOG_TRACE, "iovl: output_width %d, output_height %d\n",
            tile_grid->width, tile_grid->height);
 
@@ -10025,6 +10227,130 @@ static int mov_parse_tiles(AVFormatContext *s)
     return 0;
 }
 
+static int mov_parse_heif_items(AVFormatContext *s)
+{
+    MOVContext *mov = s->priv_data;
+    int err;
+
+    for (int i = 0; i < mov->nb_heif_item; i++) {
+        HEIFItem *item = &mov->heif_item[i];
+        MOVStreamContext *sc;
+        AVStream *st;
+        int64_t offset = 0;
+
+        if (!item->st) {
+            if (item->item_id == mov->thmb_item_id) {
+                av_log(s, AV_LOG_ERROR, "HEIF thumbnail doesn't reference a stream\n");
+                return AVERROR_INVALIDDATA;
+            }
+            continue;
+        }
+        if (item->is_idat_relative) {
+            if (!mov->idat_offset) {
+                av_log(s, AV_LOG_ERROR, "Missing idat box for item %d\n", item->item_id);
+                return AVERROR_INVALIDDATA;
+            }
+            offset = mov->idat_offset;
+        }
+
+        st = item->st;
+        sc = st->priv_data;
+        st->codecpar->width  = item->width;
+        st->codecpar->height = item->height;
+
+        if (sc->sample_count != 1 || sc->chunk_count != 1)
+            return AVERROR_INVALIDDATA;
+
+        sc->sample_sizes[0]  = item->extent_length;
+        sc->chunk_offsets[0] = item->extent_offset + offset;
+
+        if (item->item_id == mov->primary_item_id)
+            st->disposition |= AV_DISPOSITION_DEFAULT;
+
+        if (item->rotation || item->hflip || item->vflip) {
+            err = set_display_matrix_from_item(&st->codecpar->coded_side_data,
+                                               &st->codecpar->nb_coded_side_data, item);
+            if (err < 0)
+                return err;
+        }
+
+        mov_build_index(mov, st);
+    }
+
+    if (mov->nb_heif_grid) {
+        err = mov_parse_tiles(s);
+        if (err < 0)
+            return err;
+    }
+
+    return 0;
+}
+
+static AVStream *mov_find_reference_track(AVFormatContext *s, AVStream *st,
+                                          int first_index)
+{
+    MOVStreamContext *sc = st->priv_data;
+
+    if (sc->tref_id < 0)
+        return NULL;
+
+    for (int i = first_index; i < s->nb_streams; i++)
+        if (s->streams[i]->id == sc->tref_id)
+            return s->streams[i];
+
+    return NULL;
+}
+
+static int mov_parse_lcevc_streams(AVFormatContext *s)
+{
+    int err;
+
+    for (int i = 0; i < s->nb_streams; i++) {
+        AVStreamGroup *stg;
+        AVStream *st = s->streams[i];
+        AVStream *st_base;
+        MOVStreamContext *sc = st->priv_data;
+        int j = 0;
+
+        /* Find an enhancement stream. */
+        if (st->codecpar->codec_id != AV_CODEC_ID_LCEVC ||
+            !(sc->tref_flags & MOV_TREF_FLAG_ENHANCEMENT))
+            continue;
+
+        st->codecpar->codec_type = AVMEDIA_TYPE_DATA;
+
+        stg = avformat_stream_group_create(s, AV_STREAM_GROUP_PARAMS_LCEVC, NULL);
+        if (!stg)
+            return AVERROR(ENOMEM);
+
+        stg->id = st->id;
+        stg->params.lcevc->width  = st->codecpar->width;
+        stg->params.lcevc->height = st->codecpar->height;
+        st->codecpar->width = 0;
+        st->codecpar->height = 0;
+
+        while (st_base = mov_find_reference_track(s, st, j)) {
+            err = avformat_stream_group_add_stream(stg, st_base);
+            if (err < 0)
+                return err;
+
+            j = st_base->index + 1;
+        }
+        if (!j) {
+            av_log(s, AV_LOG_ERROR, "Failed to find base stream for enhancement stream\n");
+            return AVERROR_INVALIDDATA;
+        }
+
+        err = avformat_stream_group_add_stream(stg, st);
+        if (err < 0)
+            return err;
+
+        stg->params.lcevc->lcevc_index = stg->nb_streams - 1;
+    }
+
+    return 0;
+}
+
 static int mov_read_header(AVFormatContext *s)
 {
     MOVContext *mov = s->priv_data;
@@ -10067,49 +10393,9 @@ static int mov_read_header(AVFormatContext *s)
     av_log(mov->fc, AV_LOG_TRACE, "on_parse_exit_offset=%"PRId64"\n", avio_tell(pb));
 
     if (mov->found_iloc && mov->found_iinf) {
-        for (i = 0; i < mov->nb_heif_item; i++) {
-            HEIFItem *item = &mov->heif_item[i];
-            MOVStreamContext *sc;
-            AVStream *st;
-            int64_t offset = 0;
-
-            if (!item->st) {
-                if (item->item_id == mov->thmb_item_id) {
-                    av_log(s, AV_LOG_ERROR, "HEIF thumbnail doesn't reference a stream\n");
-                    return AVERROR_INVALIDDATA;
-                }
-                continue;
-            }
-            if (item->is_idat_relative) {
-                if (!mov->idat_offset) {
-                    av_log(s, AV_LOG_ERROR, "Missing idat box for item %d\n", item->item_id);
-                    return AVERROR_INVALIDDATA;
-                }
-                offset = mov->idat_offset;
-            }
-
-            st = item->st;
-            sc = st->priv_data;
-            st->codecpar->width  = item->width;
-            st->codecpar->height = item->height;
-
-            if (sc->sample_count != 1 || sc->chunk_count != 1)
-                return AVERROR_INVALIDDATA;
-
-            sc->sample_sizes[0]  = item->extent_length;
-            sc->chunk_offsets[0] = item->extent_offset + offset;
-
-            if (item->item_id == mov->primary_item_id)
-                st->disposition |= AV_DISPOSITION_DEFAULT;
-
-            mov_build_index(mov, st);
-        }
-
-        if (mov->nb_heif_grid) {
-            err = mov_parse_tiles(s);
-            if (err < 0)
-                return err;
-        }
+        err = mov_parse_heif_items(s);
+        if (err < 0)
+            return err;
     }
     // prevent iloc and iinf boxes from being parsed while reading packets.
     // this is needed because an iinf box may have been parsed but ignored
@@ -10149,6 +10435,11 @@ static int mov_read_header(AVFormatContext *s)
         }
     }
     export_orphan_timecode(s);
+
+    /* Create LCEVC stream groups. */
+    err = mov_parse_lcevc_streams(s);
+    if (err < 0)
+        return err;
 
     for (i = 0; i < s->nb_streams; i++) {
         AVStream *st = s->streams[i];

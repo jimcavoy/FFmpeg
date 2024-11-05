@@ -156,6 +156,8 @@ void ff_h264_free_tables(H264Context *h)
     av_freep(&h->mb2b_xy);
     av_freep(&h->mb2br_xy);
 
+    av_freep(&h->h274db);
+
     ff_refstruct_pool_uninit(&h->qscale_table_pool);
     ff_refstruct_pool_uninit(&h->mb_type_pool);
     ff_refstruct_pool_uninit(&h->motion_val_pool);
@@ -612,8 +614,8 @@ static int decode_nal_units(H264Context *h, const uint8_t *buf, int buf_size)
             h->is_avc = 1;
     }
 
-    ret = ff_h2645_packet_split(&h->pkt, buf, buf_size, avctx, h->is_avc, h->nal_length_size,
-                                avctx->codec_id, 0, 0);
+    ret = ff_h2645_packet_split(&h->pkt, buf, buf_size, avctx, h->nal_length_size,
+                                avctx->codec_id, !!h->is_avc * H2645_FLAG_IS_NALFF);
     if (ret < 0) {
         av_log(avctx, AV_LOG_ERROR,
                "Error splitting the input into NAL units.\n");

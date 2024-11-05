@@ -56,6 +56,10 @@ void (*shuffle_bytes_2103)(const uint8_t *src, uint8_t *dst, int src_size);
 void (*shuffle_bytes_1230)(const uint8_t *src, uint8_t *dst, int src_size);
 void (*shuffle_bytes_3012)(const uint8_t *src, uint8_t *dst, int src_size);
 void (*shuffle_bytes_3210)(const uint8_t *src, uint8_t *dst, int src_size);
+void (*shuffle_bytes_3102)(const uint8_t *src, uint8_t *dst, int src_size);
+void (*shuffle_bytes_2013)(const uint8_t *src, uint8_t *dst, int src_size);
+void (*shuffle_bytes_2130)(const uint8_t *src, uint8_t *dst, int src_size);
+void (*shuffle_bytes_1203)(const uint8_t *src, uint8_t *dst, int src_size);
 
 
 void (*yv12toyuy2)(const uint8_t *ysrc, const uint8_t *usrc,
@@ -82,7 +86,7 @@ void (*ff_rgb24toyv12)(const uint8_t *src, uint8_t *ydst,
                        uint8_t *udst, uint8_t *vdst,
                        int width, int height,
                        int lumStride, int chromStride, int srcStride,
-                       int32_t *rgb2yuv);
+                       const int32_t *rgb2yuv);
 void (*planar2x)(const uint8_t *src, uint8_t *dst, int width, int height,
                  int srcStride, int dstStride);
 void (*interleaveBytes)(const uint8_t *src1, const uint8_t *src2, uint8_t *dst,
