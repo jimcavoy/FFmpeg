@@ -61,7 +61,7 @@ enum IntraMode {
 };
 
 enum MVRefEnum {
-    MVREF_NONE,
+    MVREF_NONE = 0,
     MVREF_REF0,
     MVREF_REF1,
     MVREF_BREF,
@@ -82,7 +82,7 @@ enum {
 };
 
 static const VLCElem * cbp8_vlc[7][4];
-static const VLCElem * cbp16_vlc[7][3][4];
+static const VLCElem * cbp16_vlc[7][4][4];
 
 typedef struct {
     const VLCElem * l0[2];
@@ -137,12 +137,12 @@ static av_cold void rv60_init_static_data(void)
 
     for (int i = 0; i < 7; i++)
         for (int j = 0; j < 4; j++)
-            cbp8_vlc[i][j] = gen_vlc(rv60_cbp8_lens[i][j], 64, &state);
+            cbp16_vlc[i][0][j] = cbp8_vlc[i][j] = gen_vlc(rv60_cbp8_lens[i][j], 64, &state);
 
     for (int i = 0; i < 7; i++)
         for (int j = 0; j < 3; j++)
             for (int k = 0; k < 4; k++)
-                cbp16_vlc[i][j][k] = gen_vlc(rv60_cbp16_lens[i][j][k], 64, &state);
+                cbp16_vlc[i][j + 1][k] = gen_vlc(rv60_cbp16_lens[i][j][k], 64, &state);
 
     build_coeff_vlc(rv60_intra_lens, intra_coeff_vlc, 5, &state);
     build_coeff_vlc(rv60_inter_lens, inter_coeff_vlc, 7, &state);
@@ -309,8 +309,8 @@ static int update_dimensions_clear_info(RV60Context *s, int width, int height)
         return ret;
 
     for (int j = 0; j < s->cu_height << 4; j++)
-       for (int i = 0; i < s->cu_width << 4; i++)
-           s->blk_info[j*s->blk_stride + i].mv.mvref = MVREF_NONE;
+        for (int i = 0; i < s->cu_width << 4; i++)
+            s->blk_info[j*s->blk_stride + i].mv.mvref = MVREF_NONE;
 
     if (s->deblock) {
         int size;
@@ -335,7 +335,7 @@ static int update_dimensions_clear_info(RV60Context *s, int width, int height)
 static int read_code012(GetBitContext * gb)
 {
     if (!get_bits1(gb))
-       return 0;
+        return 0;
     return get_bits1(gb) + 1;
 }
 
@@ -390,15 +390,18 @@ static int read_frame_header(RV60Context *s, GetBitContext *gb, int * width, int
 static int read_slice_sizes(RV60Context *s, GetBitContext *gb)
 {
     int nbits = get_bits(gb, 5) + 1;
-    int last_size, sum = 0;
+    int last_size;
 
     for (int i = 0; i < s->cu_height; i++)
         s->slice[i].sign = get_bits1(gb);
 
-    s->slice[0].size = last_size = sum = get_bits(gb, nbits);
+    s->slice[0].size = last_size = get_bits_long(gb, nbits);
+
+    if (last_size < 0)
+        return AVERROR_INVALIDDATA;
 
     for (int i = 1; i < s->cu_height; i++) {
-        int diff = get_bits(gb, nbits);
+        int diff = get_bits_long(gb, nbits);
         if (s->slice[i].sign)
             last_size += diff;
         else
@@ -406,7 +409,6 @@ static int read_slice_sizes(RV60Context *s, GetBitContext *gb)
         if (last_size <= 0)
             return AVERROR_INVALIDDATA;
         s->slice[i].size = last_size;
-        sum += s->slice[i].size;
     }
 
     align_get_bits(gb);
@@ -862,50 +864,30 @@ static int get_skip_mv_index(enum MVRefEnum mvref)
     }
 }
 
-static int mvinfo_valid(const MVInfo * mvi)
+static void add_if_valid(unique_list_mvinfo * skip_cand, const MVInfo * mvi)
 {
-    return mvi->mvref != MVREF_NONE;
+    if (mvi->mvref != MVREF_NONE)
+        unique_list_mvinfo_add(skip_cand, *mvi);
 }
 
 static void fill_mv_skip_cand(RV60Context * s, const CUContext * cu, unique_list_mvinfo * skip_cand, int size)
 {
     int mv_size = size >> 2;
 
-    if (cu->xpos > 0) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos - 1].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
-    if (cu->ypos > 0) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos - s->blk_stride].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
-    if (has_top_right_block(s, cu->xpos, cu->ypos, 0, 0, size)) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos - s->blk_stride + mv_size].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
-    if (has_left_down_block(s, cu->xpos, cu->ypos, 0, 0, size)) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos + s->blk_stride * mv_size - 1].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
-    if (has_left_block(s, cu->xpos, cu->ypos, 0, 0, size)) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos + s->blk_stride * (mv_size - 1) - 1].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
-    if (has_top_block(s, cu->xpos, cu->ypos, 0, 0, size)) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos - s->blk_stride + mv_size - 1].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
-    if (cu->xpos > 0 && cu->ypos > 0) {
-        const MVInfo * mv = &s->blk_info[cu->blk_pos - s->blk_stride - 1].mv;
-        if (mvinfo_valid(mv))
-            unique_list_mvinfo_add(skip_cand, *mv);
-    }
+    if (cu->xpos)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos - 1].mv);
+    if (cu->ypos)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos - s->blk_stride].mv);
+    if (cu->ypos && cu->xpos + size < s->awidth)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos - s->blk_stride + mv_size].mv);
+    if (cu->xpos && cu->ypos + size < s->aheight)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos + s->blk_stride * mv_size - 1].mv);
+    if (cu->xpos)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos + s->blk_stride * (mv_size - 1) - 1].mv);
+    if (cu->ypos)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos - s->blk_stride + mv_size - 1].mv);
+    if (cu->xpos && cu->ypos)
+        add_if_valid(skip_cand, &s->blk_info[cu->blk_pos - s->blk_stride - 1].mv);
 
     for (int i = skip_cand->size; i < 4; i++)
         skip_cand->list[i] = (MVInfo){.mvref=MVREF_REF0,.f_mv={0,0},.b_mv={0,0}};
@@ -1420,10 +1402,10 @@ static void avg_plane(uint8_t * dst, int dst_stride, const uint8_t * src, int sr
 static void avg(AVFrame * frame, uint8_t * prev_frame_data[3], int prev_frame_linesize[3], int x, int y, int w, int h)
 {
     for (int plane = 0; plane < 3; plane++) {
-       int shift = !plane ? 0 : 1;
-       avg_plane(frame->data[plane] + (y >> shift) * frame->linesize[plane] + (x >> shift), frame->linesize[plane],
-                 prev_frame_data[plane], prev_frame_linesize[plane],
-                 w >> shift, h >> shift);
+        int shift = !plane ? 0 : 1;
+        avg_plane(frame->data[plane] + (y >> shift) * frame->linesize[plane] + (x >> shift), frame->linesize[plane],
+                  prev_frame_data[plane], prev_frame_linesize[plane],
+                  w >> shift, h >> shift);
     }
 }
 
@@ -1667,10 +1649,7 @@ static int decode_super_cbp(GetBitContext * gb, const VLCElem * vlc[4])
 static int decode_cbp16(GetBitContext * gb, int subset, int qp)
 {
     int cb_set = rv60_qp_to_idx[qp];
-    if (!subset)
-        return decode_super_cbp(gb, cbp8_vlc[cb_set]);
-    else
-        return decode_super_cbp(gb, cbp16_vlc[cb_set][subset - 1]);
+    return decode_super_cbp(gb, cbp16_vlc[cb_set][subset]);
 }
 
 static int decode_cu_r(RV60Context * s, AVFrame * frame, ThreadContext * thread, GetBitContext * gb, int xpos, int ypos, int log_size, int qp, int sel_qp)
@@ -1762,15 +1741,24 @@ static int decode_cu_r(RV60Context * s, AVFrame * frame, ThreadContext * thread,
             bx = mv_x << 2;
             by = mv_y << 2;
 
+            if (!(mv.mvref & 2)) {
+                if (!s->last_frame[LAST_PIC]->data[0]) {
+                    av_log(s->avctx, AV_LOG_ERROR, "missing reference frame\n");
+                    return AVERROR_INVALIDDATA;
+                }
+            }
+            if (mv.mvref & 6) {
+                if (!s->last_frame[NEXT_PIC]->data[0]) {
+                    av_log(s->avctx, AV_LOG_ERROR, "missing reference frame\n");
+                    return AVERROR_INVALIDDATA;
+                }
+            }
+
             switch (mv.mvref) {
             case MVREF_REF0:
                 mc(s, frame->data, frame->linesize, s->last_frame[LAST_PIC], bx, by, bw, bh, mv.f_mv, 0);
                 break;
             case MVREF_REF1:
-                if (!s->last_frame[NEXT_PIC]->data[0]) {
-                    av_log(s->avctx, AV_LOG_ERROR, "missing reference frame\n");
-                    return AVERROR_INVALIDDATA;
-                }
                 mc(s, frame->data, frame->linesize, s->last_frame[NEXT_PIC], bx, by, bw, bh, mv.f_mv, 0);
                 break;
             case MVREF_BREF:
@@ -1799,6 +1787,8 @@ static int decode_cu_r(RV60Context * s, AVFrame * frame, ThreadContext * thread,
         ttype = cu.pu_type == PU_FULL ? TRANSFORM_8X8 : TRANSFORM_4X4;
 
     is_intra = cu.cu_type == CU_INTRA;
+    if (qp >= 32)
+        return AVERROR_INVALIDDATA;
     cu_pos = ((xpos & 63) >> 3) + ((ypos & 63) >> 3) * 8;
 
     switch (ttype) {
@@ -2171,7 +2161,7 @@ static void deblock_cu_r(RV60Context * s, AVFrame * frame, ThreadContext * threa
     enum CUType cu_type;
 
     if (xpos >= s->awidth || ypos >= s->aheight)
-       return;
+        return;
 
     if (thread->cu_split[thread->cu_split_pos++]) {
         int hsize = 1 << (log_size - 1);
@@ -2263,7 +2253,7 @@ static int decode_slice(AVCodecContext *avctx, void *tdata, int cu_y, int thread
     thread.avg_linesize[1] = 32;
     thread.avg_linesize[2] = 32;
 
-    if ((ret = init_get_bits8(&gb, s->slice[cu_y].data, s->slice[cu_y].size)) < 0)
+    if ((ret = init_get_bits8(&gb, s->slice[cu_y].data, s->slice[cu_y].data_size)) < 0)
         return ret;
 
     for (int cu_x = 0; cu_x < s->cu_width; cu_x++) {
@@ -2357,10 +2347,12 @@ static int rv60_decode_frame(AVCodecContext *avctx, AVFrame * frame,
     ofs = get_bits_count(&gb) / 8;
 
     for (int i = 0; i < s->cu_height; i++) {
-        if (header_size + ofs >= avpkt->size)
+        if (ofs >= avpkt->size - header_size)
             return AVERROR_INVALIDDATA;
         s->slice[i].data = avpkt->data + header_size + ofs;
         s->slice[i].data_size = FFMIN(s->slice[i].size, avpkt->size - header_size - ofs);
+        if (s->slice[i].size > INT32_MAX - ofs)
+            return AVERROR_INVALIDDATA;
         ofs += s->slice[i].size;
     }
 
