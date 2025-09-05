@@ -497,6 +497,8 @@ enum AVPixelFormat {
     AV_PIX_FMT_GBRP12MSBBE,    ///< planar GBR 4:4:4 36bpp, lowest bits zero, big-endian
     AV_PIX_FMT_GBRP12MSBLE,    ///< planar GBR 4:4:4 36bpp, lowest bits zero, little-endian
 
+    AV_PIX_FMT_OHCODEC, /// hardware decoding through openharmony
+
     AV_PIX_FMT_NB         ///< number of pixel formats, DO NOT USE THIS if you want to link with shared libav* because the number of formats might differ between versions
 };
 
@@ -790,6 +792,16 @@ enum AVChromaLocation {
     AVCHROMA_LOC_BOTTOMLEFT  = 5,
     AVCHROMA_LOC_BOTTOM      = 6,
     AVCHROMA_LOC_NB               ///< Not part of ABI
+};
+
+/**
+ * Correlation between the alpha channel and color values.
+ */
+enum AVAlphaMode {
+    AVALPHA_MODE_UNSPECIFIED   = 0, ///< Unknown alpha handling, or no alpha channel
+    AVALPHA_MODE_PREMULTIPLIED = 1, ///< Alpha channel is multiplied into color values
+    AVALPHA_MODE_STRAIGHT      = 2, ///< Alpha channel is independent of color values
+    AVALPHA_MODE_NB                 ///< Not part of ABI
 };
 
 #endif /* AVUTIL_PIXFMT_H */

@@ -20,6 +20,9 @@
 
 /** Based on the CURL SChannel module */
 
+#include "config.h"
+#include "config_components.h"
+
 #include "libavutil/mem.h"
 #include "avformat.h"
 #include "internal.h"
@@ -634,6 +637,7 @@ int ff_tls_set_external_socket(URLContext *h, URLContext *sock)
 
 int ff_dtls_export_materials(URLContext *h, char *dtls_srtp_materials, size_t materials_sz)
 {
+#if HAVE_SECPKGCONTEXT_KEYINGMATERIALINFO
     TLSContext *c = h->priv_data;
 
     SecPkgContext_KeyingMaterialInfo keying_info = { 0 };
@@ -672,12 +676,9 @@ int ff_dtls_export_materials(URLContext *h, char *dtls_srtp_materials, size_t ma
     }
 
     return 0;
-}
-
-int ff_dtls_state(URLContext *h)
-{
-    TLSContext *c = h->priv_data;
-    return c->tls_shared.state;
+#else
+    return AVERROR(ENOSYS);
+#endif
 }
 
 static void init_sec_buffer(SecBuffer *buffer, unsigned long type,
@@ -773,7 +774,11 @@ static int tls_shutdown_client(URLContext *h)
                 }
                 FreeContextBuffer(outbuf.pvBuffer);
             }
-        } while(sspi_ret == SEC_I_MESSAGE_FRAGMENT || sspi_ret == SEC_I_CONTINUE_NEEDED);
+        } while(
+#ifdef SEC_I_MESSAGE_FRAGMENT
+                sspi_ret == SEC_I_MESSAGE_FRAGMENT ||
+#endif
+                sspi_ret == SEC_I_CONTINUE_NEEDED);
 
         av_log(h, AV_LOG_DEBUG, "Close session result: 0x%lx\n", sspi_ret);
 
@@ -928,7 +933,11 @@ static int tls_handshake_loop(URLContext *h, int initial)
         }
 
         /* continue handshake */
-        if (sspi_ret == SEC_I_CONTINUE_NEEDED || sspi_ret == SEC_I_MESSAGE_FRAGMENT || sspi_ret == SEC_E_OK) {
+        if (sspi_ret == SEC_I_CONTINUE_NEEDED ||
+#ifdef SEC_I_MESSAGE_FRAGMENT
+            sspi_ret == SEC_I_MESSAGE_FRAGMENT ||
+#endif
+            sspi_ret == SEC_E_OK) {
             for (i = 0; i < 3; i++) {
                 if (outbuf[i].BufferType == SECBUFFER_TOKEN && outbuf[i].cbBuffer > 0) {
                     ret = ffurl_write(uc, outbuf[i].pvBuffer, outbuf[i].cbBuffer);
@@ -953,11 +962,13 @@ static int tls_handshake_loop(URLContext *h, int initial)
             goto fail;
         }
 
+#ifdef SEC_I_MESSAGE_FRAGMENT
         if (sspi_ret == SEC_I_MESSAGE_FRAGMENT) {
             av_log(h, AV_LOG_TRACE, "Writing fragmented output message part\n");
             read_data = 0;
             continue;
         }
+#endif
 
         if (inbuf[1].BufferType == SECBUFFER_EXTRA && inbuf[1].cbBuffer > 0) {
             if (c->enc_buf_offset > inbuf[1].cbBuffer) {
@@ -1080,6 +1091,7 @@ static int tls_handshake(URLContext *h)
     if (ret < 0)
         goto fail;
 
+#if CONFIG_DTLS_PROTOCOL
     if (s->is_dtls && s->mtu > 0) {
         ULONG mtu = s->mtu;
         sspi_ret = SetContextAttributes(&c->ctxt_handle, SECPKG_ATTR_DTLS_MTU, &mtu, sizeof(mtu));
@@ -1090,9 +1102,9 @@ static int tls_handshake(URLContext *h)
         }
         av_log(h, AV_LOG_VERBOSE, "Set DTLS MTU to %d\n", s->mtu);
     }
+#endif
 
     c->connected = 1;
-    s->state = DTLS_STATE_FINISHED;
 
 fail:
     return ret;
@@ -1136,8 +1148,10 @@ static int tls_open(URLContext *h, const char *uri, int flags, AVDictionary **op
 
         schannel_cred.dwFlags = SCH_CRED_NO_SYSTEM_MAPPER | SCH_CRED_MANUAL_CRED_VALIDATION;
 
+#if CONFIG_DTLS_PROTOCOL
         if (s->is_dtls)
             schannel_cred.grbitEnabledProtocols = SP_PROT_DTLS1_X_SERVER;
+#endif
     } else {
         if (s->verify)
             schannel_cred.dwFlags = SCH_CRED_AUTO_CRED_VALIDATION |
@@ -1147,8 +1161,10 @@ static int tls_open(URLContext *h, const char *uri, int flags, AVDictionary **op
                                     SCH_CRED_IGNORE_NO_REVOCATION_CHECK |
                                     SCH_CRED_IGNORE_REVOCATION_OFFLINE;
 
+#if CONFIG_DTLS_PROTOCOL
         if (s->is_dtls)
             schannel_cred.grbitEnabledProtocols = SP_PROT_DTLS1_X_CLIENT;
+#endif
     }
 
     /* Get credential handle */
@@ -1183,6 +1199,7 @@ end:
     return ret;
 }
 
+#if CONFIG_DTLS_PROTOCOL
 static int dtls_open(URLContext *h, const char *uri, int flags, AVDictionary **options)
 {
     TLSContext *c = h->priv_data;
@@ -1192,6 +1209,7 @@ static int dtls_open(URLContext *h, const char *uri, int flags, AVDictionary **o
 
     return tls_open(h, uri, flags, options);
 }
+#endif
 
 static int tls_read(URLContext *h, uint8_t *buf, int len)
 {
@@ -1404,7 +1422,7 @@ static int tls_write(URLContext *h, const uint8_t *buf, int len)
 
     ret = tls_process_send_buffer(h);
     if (ret == AVERROR(EAGAIN)) {
-         /* We always need to signal that we consumed all (encryped) data since schannel must not
+         /* We always need to signal that we consumed all (encrypted) data since schannel must not
             be fed the same data again. Sending will then be completed next call to this function,
             and EAGAIN returned until all remaining buffer is sent. */
         return outbuf[1].cbBuffer;
@@ -1439,6 +1457,7 @@ static const AVOption options[] = {
     { NULL }
 };
 
+#if CONFIG_TLS_PROTOCOL
 static const AVClass tls_class = {
     .class_name = "tls",
     .item_name  = av_default_item_name,
@@ -1458,7 +1477,9 @@ const URLProtocol ff_tls_protocol = {
     .flags          = URL_PROTOCOL_FLAG_NETWORK,
     .priv_data_class = &tls_class,
 };
+#endif
 
+#if CONFIG_DTLS_PROTOCOL
 static const AVClass dtls_class = {
     .class_name = "dtls",
     .item_name  = av_default_item_name,
@@ -1479,3 +1500,4 @@ const URLProtocol ff_dtls_protocol = {
     .flags          = URL_PROTOCOL_FLAG_NETWORK,
     .priv_data_class = &dtls_class,
 };
+#endif
